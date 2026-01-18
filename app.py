@@ -130,8 +130,18 @@ def importar_rpv():
     arquivo = request.files["arquivo"]
     df = pd.read_excel(arquivo)
 
+    def pegar(row, *nomes):
+        for n in nomes:
+            if n in row and pd.notna(row[n]):
+                return row[n]
+        return ""
+
     with db() as conn:
         for _, row in df.iterrows():
+            numero = str(pegar(row, "Processo", "Número", "Numero")).strip()
+            valor = pegar(row, "Honorário", "Valor a receber", "Valor")
+            status_raw = str(pegar(row, "Status")).upper()
+
             conn.execute("""
             INSERT INTO financeiro (
                 numero_processo,
@@ -143,14 +153,15 @@ def importar_rpv():
                 data_recebimento
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
-                str(row.get("Processo", "")).strip(),
+                numero,
                 "RPV",
-                f"NF: {row.get('Nota Fiscal', '')} - {row.get('Observações', '')}",
-                float(row.get("Honorário", row.get("Valor a receber", 0)) or 0),
-                "RECEBIDO" if str(row.get("Status", "")).upper() == "PAGO" else "A_RECEBER",
-                row.get("Data Prevista", ""),
-                row.get("Data Pagamento", "")
+                f"NF: {pegar(row,'Nota Fiscal')} - {pegar(row,'Observações')}",
+                float(valor) if valor else 0,
+                "RECEBIDO" if "PAGO" in status_raw else "A_RECEBER",
+                pegar(row, "Data Prevista"),
+                pegar(row, "Data Pagamento", "Data de Pagamento")
             ))
+
     return redirect("/")
 
 # ---------------- FINANCEIRO POR CONTRATO ----------------
