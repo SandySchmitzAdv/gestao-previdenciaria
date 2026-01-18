@@ -259,4 +259,3 @@ def financeiro(numero):
 # ---------------- START ----------------
 if __name__ == "__main__":
     app.run()
-
