@@ -1,7 +1,7 @@
 from flask import Flask, request, redirect, url_for, render_template_string
 import pandas as pd
 import sqlite3
-import os
+from datetime import datetime
 
 app = Flask(__name__)
 DB_PATH = "dados.db"
@@ -16,8 +16,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS contratos (
             numero TEXT PRIMARY KEY,
             cliente TEXT,
-            tipo TEXT,
-            acao TEXT,
+            status TEXT DEFAULT 'ATIVO',
             data_encerramento TEXT
         )
         """)
@@ -29,32 +28,41 @@ def init_db():
             descricao TEXT,
             valor REAL,
             status_pagamento TEXT,
-            data_prevista TEXT,
-            data_recebimento TEXT
+            data_evento TEXT
         )
         """)
 init_db()
 
-# ---------------- FUNÇÕES AUXILIARES ----------------
-def pegar(row, *nomes):
-    for n in nomes:
-        if n in row and pd.notna(row[n]):
-            return str(row[n]).strip()
-    return ""
-
-def to_float(valor):
+# ---------------- UTIL ----------------
+def to_float(v):
     try:
-        return float(str(valor).replace(".", "").replace(",", "."))
+        return float(str(v).replace(".", "").replace(",", "."))
     except:
         return 0.0
+
+def ano(data):
+    try:
+        return datetime.strptime(data, "%Y-%m-%d").year
+    except:
+        return None
+
+def mes(data):
+    try:
+        return datetime.strptime(data, "%Y-%m-%d").strftime("%Y-%m")
+    except:
+        return None
 
 # ---------------- DASHBOARD ----------------
 @app.route("/")
 def dashboard():
     with db() as conn:
-        contratos = conn.execute(
-            "SELECT numero, cliente FROM contratos ORDER BY cliente"
-        ).fetchall()
+        total_contratos = conn.execute("SELECT COUNT(*) FROM contratos").fetchone()[0]
+        ativos = conn.execute("SELECT COUNT(*) FROM contratos WHERE status='ATIVO'").fetchone()[0]
+        encerrados = conn.execute("SELECT COUNT(*) FROM contratos WHERE status='ENCERRADO'").fetchone()[0]
+
+        total_faturado = conn.execute(
+            "SELECT COALESCE(SUM(valor),0) FROM financeiro"
+        ).fetchone()[0]
 
         recebido = conn.execute(
             "SELECT COALESCE(SUM(valor),0) FROM financeiro WHERE status_pagamento='RECEBIDO'"
@@ -72,33 +80,74 @@ def dashboard():
             "SELECT COALESCE(SUM(valor),0) FROM financeiro WHERE tipo_evento='PRECATÓRIO'"
         ).fetchone()[0]
 
+        honorarios = conn.execute(
+            "SELECT COALESCE(SUM(valor),0) FROM financeiro WHERE tipo_evento='HONORÁRIOS'"
+        ).fetchone()[0]
+
+        faturado_por_ano = conn.execute("""
+            SELECT substr(data_evento,1,4) as ano, SUM(valor)
+            FROM financeiro
+            GROUP BY ano
+            ORDER BY ano
+        """).fetchall()
+
+        recebido_por_mes = conn.execute("""
+            SELECT substr(data_evento,1,7) as mes, SUM(valor)
+            FROM financeiro
+            WHERE status_pagamento='RECEBIDO'
+            GROUP BY mes
+            ORDER BY mes
+        """).fetchall()
+
+        contratos = conn.execute(
+            "SELECT numero, cliente FROM contratos ORDER BY cliente"
+        ).fetchall()
+
     html = """
     <h1>📊 Gestão Financeira Previdenciária</h1>
 
-    <p><b>Total Recebido:</b> R$ {{ recebido }}</p>
-    <p><b>Total a Receber:</b> R$ {{ a_receber }}</p>
-    <p><b>RPV:</b> R$ {{ rpv }}</p>
-    <p><b>Precatórios:</b> R$ {{ precatorio }}</p>
+    <h2>Contratos</h2>
+    <ul>
+        <li>Total: {{ total_contratos }}</li>
+        <li>Ativos: {{ ativos }}</li>
+        <li>Encerrados: {{ encerrados }}</li>
+    </ul>
+
+    <h2>Financeiro Geral</h2>
+    <ul>
+        <li>Total Faturado: R$ {{ total_faturado }}</li>
+        <li>Total Recebido: R$ {{ recebido }}</li>
+        <li>Total a Receber: R$ {{ a_receber }}</li>
+        <li>Honorários: R$ {{ honorarios }}</li>
+        <li>RPV: R$ {{ rpv }}</li>
+        <li>Precatório: R$ {{ precatorio }}</li>
+    </ul>
+
+    <h3>Faturamento por Ano</h3>
+    <ul>
+    {% for a in faturado_por_ano %}
+        <li>{{ a[0] }}: R$ {{ a[1] }}</li>
+    {% endfor %}
+    </ul>
+
+    <h3>Recebido por Mês</h3>
+    <ul>
+    {% for m in recebido_por_mes %}
+        <li>{{ m[0] }}: R$ {{ m[1] }}</li>
+    {% endfor %}
+    </ul>
 
     <hr>
 
-    <h3>📥 Importações</h3>
-
+    <h3>📥 Importar Contratos (Astrea)</h3>
     <form action="/importar_contratos" method="POST" enctype="multipart/form-data">
         <input type="file" name="arquivo" required>
-        <button type="submit">Importar Contratos (Astrea)</button>
-    </form>
-
-    <br>
-
-    <form action="/importar_rpv" method="POST" enctype="multipart/form-data">
-        <input type="file" name="arquivo" required>
-        <button type="submit">Importar RPV / Financeiro</button>
+        <button type="submit">Importar</button>
     </form>
 
     <hr>
 
-    <h2>Contratos</h2>
+    <h3>Contratos</h3>
     <ul>
     {% for c in contratos %}
       <li>
@@ -111,11 +160,18 @@ def dashboard():
 
     return render_template_string(
         html,
-        contratos=contratos,
+        total_contratos=total_contratos,
+        ativos=ativos,
+        encerrados=encerrados,
+        total_faturado=f"{total_faturado:,.2f}",
         recebido=f"{recebido:,.2f}",
         a_receber=f"{a_receber:,.2f}",
+        honorarios=f"{honorarios:,.2f}",
         rpv=f"{rpv:,.2f}",
-        precatorio=f"{precatorio:,.2f}"
+        precatorio=f"{precatorio:,.2f}",
+        faturado_por_ano=faturado_por_ano,
+        recebido_por_mes=recebido_por_mes,
+        contratos=contratos
     )
 
 # ---------------- IMPORTAR CONTRATOS ----------------
@@ -126,93 +182,18 @@ def importar_contratos():
 
     with db() as conn:
         for _, row in df.iterrows():
-            numero = pegar(row, "Número", "Numero", "Processo")
+            numero = str(row.get("Número", "")).strip()
             if not numero:
                 continue
-
             conn.execute("""
             INSERT OR IGNORE INTO contratos
-            (numero, cliente, tipo, acao, data_encerramento)
-            VALUES (?, ?, ?, ?, ?)
+            (numero, cliente)
+            VALUES (?, ?)
             """, (
                 numero,
-                pegar(row, "Cliente"),
-                pegar(row, "Tipo"),
-                pegar(row, "Ação"),
-                pegar(row, "Data de Encerramento")
+                row.get("Cliente", "")
             ))
-
     return redirect("/")
-
-# ---------------- IMPORTAR RPV ----------------
-@app.route("/importar_rpv", methods=["POST"])
-def importar_rpv():
-    arquivo = request.files["arquivo"]
-    df = pd.read_excel(arquivo)
-
-    def to_float_seguro(v):
-        if pd.isna(v):
-            return 0.0
-        if isinstance(v, (int, float)):
-            return float(v)
-        v = str(v).strip()
-        if "," in v and "." in v:
-            v = v.replace(".", "").replace(",", ".")
-        elif "," in v:
-            v = v.replace(",", ".")
-        try:
-            return float(v)
-        except:
-            return 0.0
-
-    inseridos = 0
-
-    with db() as conn:
-        for _, row in df.iterrows():
-            numero = pegar(row, "Processo", "Número", "Numero")
-            nf = pegar(row, "Nota Fiscal")
-            valor = to_float_seguro(pegar(row, "Honorário", "Valor a receber", "Valor"))
-            data_pag = pegar(row, "Data Pagamento", "Data de Pagamento")
-
-            if not numero or valor == 0:
-                continue
-
-            # 🔐 REGRA ANTI-DUPLICAÇÃO
-            existe = conn.execute("""
-                SELECT 1 FROM financeiro
-                WHERE numero_processo=? AND valor=? AND data_recebimento=? AND tipo_evento='RPV'
-            """, (numero, valor, data_pag)).fetchone()
-
-            if existe:
-                continue
-
-            status_raw = pegar(row, "Status").upper()
-
-            conn.execute("""
-            INSERT INTO financeiro (
-                numero_processo,
-                tipo_evento,
-                descricao,
-                valor,
-                status_pagamento,
-                data_prevista,
-                data_recebimento
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                numero,
-                "RPV",
-                f"RPV | NF: {nf}",
-                valor,
-                "RECEBIDO" if "PAGO" in status_raw else "A_RECEBER",
-                pegar(row, "Data Prevista", "Data de Expedição"),
-                data_pag
-            ))
-
-            inseridos += 1
-
-    print(f"RPVs novos inseridos: {inseridos}")
-    return redirect("/")
-
 
 # ---------------- FINANCEIRO POR CONTRATO ----------------
 @app.route("/financeiro/<numero>", methods=["GET", "POST"])
@@ -220,23 +201,21 @@ def financeiro(numero):
     with db() as conn:
         if request.method == "POST":
             conn.execute("""
-            INSERT INTO financeiro (
-                numero_processo, tipo_evento, descricao, valor,
-                status_pagamento, data_prevista, data_recebimento
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO financeiro
+            (numero_processo, tipo_evento, descricao, valor, status_pagamento, data_evento)
+            VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 numero,
                 request.form["tipo_evento"],
                 request.form["descricao"],
                 to_float(request.form["valor"]),
                 request.form["status_pagamento"],
-                request.form["data_prevista"],
-                request.form["data_recebimento"]
+                request.form["data_evento"]
             ))
             return redirect(url_for("financeiro", numero=numero))
 
         lancamentos = conn.execute("""
-        SELECT tipo_evento, descricao, valor, status_pagamento
+        SELECT tipo_evento, descricao, valor, status_pagamento, data_evento
         FROM financeiro WHERE numero_processo=?
         """, (numero,)).fetchall()
 
@@ -255,7 +234,7 @@ def financeiro(numero):
         <input name="descricao"><br>
 
         <label>Valor:</label>
-        <input name="valor" step="0.01"><br>
+        <input name="valor"><br>
 
         <label>Status:</label>
         <select name="status_pagamento">
@@ -263,11 +242,8 @@ def financeiro(numero):
             <option>A_RECEBER</option>
         </select><br>
 
-        <label>Data prevista:</label>
-        <input name="data_prevista" type="date"><br>
-
-        <label>Data recebimento:</label>
-        <input name="data_recebimento" type="date"><br><br>
+        <label>Data:</label>
+        <input name="data_evento" type="date"><br><br>
 
         <button type="submit">Salvar</button>
     </form>
@@ -276,7 +252,7 @@ def financeiro(numero):
     <h3>Lançamentos</h3>
     <ul>
     {% for l in lancamentos %}
-      <li>{{ l[0] }} — {{ l[1] }} — R$ {{ l[2] }} ({{ l[3] }})</li>
+      <li>{{ l[4] }} — {{ l[0] }} — {{ l[1] }} — R$ {{ l[2] }} ({{ l[3] }})</li>
     {% endfor %}
     </ul>
 
