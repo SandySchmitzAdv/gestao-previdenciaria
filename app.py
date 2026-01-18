@@ -150,14 +150,42 @@ def importar_rpv():
     arquivo = request.files["arquivo"]
     df = pd.read_excel(arquivo)
 
-    print("COLUNAS RPV:", df.columns.tolist())
+    def to_float_seguro(v):
+        if pd.isna(v):
+            return 0.0
+        if isinstance(v, (int, float)):
+            return float(v)
+        v = str(v).strip()
+        if "," in v and "." in v:
+            v = v.replace(".", "").replace(",", ".")
+        elif "," in v:
+            v = v.replace(",", ".")
+        try:
+            return float(v)
+        except:
+            return 0.0
 
     inseridos = 0
 
     with db() as conn:
         for _, row in df.iterrows():
             numero = pegar(row, "Processo", "Número", "Numero")
-            valor = to_float(pegar(row, "Honorário", "Valor a receber", "Valor"))
+            nf = pegar(row, "Nota Fiscal")
+            valor = to_float_seguro(pegar(row, "Honorário", "Valor a receber", "Valor"))
+            data_pag = pegar(row, "Data Pagamento", "Data de Pagamento")
+
+            if not numero or valor == 0:
+                continue
+
+            # 🔐 REGRA ANTI-DUPLICAÇÃO
+            existe = conn.execute("""
+                SELECT 1 FROM financeiro
+                WHERE numero_processo=? AND valor=? AND data_recebimento=? AND tipo_evento='RPV'
+            """, (numero, valor, data_pag)).fetchone()
+
+            if existe:
+                continue
+
             status_raw = pegar(row, "Status").upper()
 
             conn.execute("""
@@ -171,19 +199,20 @@ def importar_rpv():
                 data_recebimento
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
-                numero if numero else "SEM_PROCESSO",
+                numero,
                 "RPV",
-                f"RPV IMPORTADO | NF: {pegar(row,'Nota Fiscal')} | {pegar(row,'Observações')}",
+                f"RPV | NF: {nf}",
                 valor,
                 "RECEBIDO" if "PAGO" in status_raw else "A_RECEBER",
                 pegar(row, "Data Prevista", "Data de Expedição"),
-                pegar(row, "Data Pagamento", "Data de Pagamento")
+                data_pag
             ))
 
             inseridos += 1
 
-    print(f"RPVs inseridos: {inseridos}")
+    print(f"RPVs novos inseridos: {inseridos}")
     return redirect("/")
+
 
 # ---------------- FINANCEIRO POR CONTRATO ----------------
 @app.route("/financeiro/<numero>", methods=["GET", "POST"])
