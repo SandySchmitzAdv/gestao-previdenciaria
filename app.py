@@ -5,7 +5,7 @@ import sqlite3
 app = Flask(__name__)
 DB_PATH = "dados.db"
 
-# ---------- BANCO DE DADOS ----------
+# ---------------- BANCO ----------------
 def db():
     return sqlite3.connect(DB_PATH)
 
@@ -34,7 +34,7 @@ def init_db():
         """)
 init_db()
 
-# ---------- DASHBOARD ----------
+# ---------------- DASHBOARD ----------------
 @app.route("/")
 def dashboard():
     with db() as conn:
@@ -68,10 +68,18 @@ def dashboard():
 
     <hr>
 
-    <h2>📥 Importar planilha do ASTREA</h2>
-    <form action="/importar" method="POST" enctype="multipart/form-data">
-        <input type="file" name="arquivo" accept=".xlsx" required>
-        <button type="submit">Importar</button>
+    <h3>📥 Importações</h3>
+
+    <form action="/importar_contratos" method="POST" enctype="multipart/form-data">
+        <input type="file" name="arquivo" required>
+        <button type="submit">Importar Contratos (Astrea)</button>
+    </form>
+
+    <br>
+
+    <form action="/importar_rpv" method="POST" enctype="multipart/form-data">
+        <input type="file" name="arquivo" required>
+        <button type="submit">Importar RPV / Financeiro</button>
     </form>
 
     <hr>
@@ -79,12 +87,10 @@ def dashboard():
     <h2>Contratos</h2>
     <ul>
     {% for c in contratos %}
-        <li>
-            {{ c[1] }} — {{ c[0] }}
-            [ <a href="/financeiro/{{ c[0] }}">Financeiro</a> ]
-        </li>
-    {% else %}
-        <li><i>Nenhum contrato importado ainda</i></li>
+      <li>
+        {{ c[1] }} — {{ c[0] }}
+        [<a href="/financeiro/{{ c[0] }}">Financeiro</a>]
+      </li>
     {% endfor %}
     </ul>
     """
@@ -97,47 +103,71 @@ def dashboard():
         precatorio=f"{precatorio:,.2f}"
     )
 
-# ---------- IMPORTAÇÃO ASTREA ----------
-@app.route("/importar", methods=["POST"])
-def importar():
+# ---------------- IMPORTAR CONTRATOS ----------------
+@app.route("/importar_contratos", methods=["POST"])
+def importar_contratos():
     arquivo = request.files["arquivo"]
     df = pd.read_excel(arquivo)
 
     with db() as conn:
         for _, row in df.iterrows():
-            numero = str(row.get("Número", "")).strip()
-            if not numero:
-                continue
-
             conn.execute("""
             INSERT OR IGNORE INTO contratos
             (numero, cliente, tipo, acao, data_encerramento)
             VALUES (?, ?, ?, ?, ?)
             """, (
-                numero,
+                str(row.get("Número", "")).strip(),
                 row.get("Cliente", ""),
                 row.get("Tipo", ""),
                 row.get("Ação", ""),
                 row.get("Data de Encerramento", "")
             ))
-
     return redirect("/")
 
-# ---------- FINANCEIRO POR CONTRATO ----------
+# ---------------- IMPORTAR RPV ----------------
+@app.route("/importar_rpv", methods=["POST"])
+def importar_rpv():
+    arquivo = request.files["arquivo"]
+    df = pd.read_excel(arquivo)
+
+    with db() as conn:
+        for _, row in df.iterrows():
+            conn.execute("""
+            INSERT INTO financeiro (
+                numero_processo,
+                tipo_evento,
+                descricao,
+                valor,
+                status_pagamento,
+                data_prevista,
+                data_recebimento
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                str(row.get("Processo", "")).strip(),
+                "RPV",
+                f"NF: {row.get('Nota Fiscal', '')} - {row.get('Observações', '')}",
+                float(row.get("Honorário", row.get("Valor a receber", 0)) or 0),
+                "RECEBIDO" if str(row.get("Status", "")).upper() == "PAGO" else "A_RECEBER",
+                row.get("Data Prevista", ""),
+                row.get("Data Pagamento", "")
+            ))
+    return redirect("/")
+
+# ---------------- FINANCEIRO POR CONTRATO ----------------
 @app.route("/financeiro/<numero>", methods=["GET", "POST"])
 def financeiro(numero):
     with db() as conn:
         if request.method == "POST":
             conn.execute("""
-            INSERT INTO financeiro
-            (numero_processo, tipo_evento, descricao, valor,
-             status_pagamento, data_prevista, data_recebimento)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO financeiro (
+                numero_processo, tipo_evento, descricao, valor,
+                status_pagamento, data_prevista, data_recebimento
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 numero,
                 request.form["tipo_evento"],
                 request.form["descricao"],
-                float(request.form["valor"]),
+                request.form["valor"],
                 request.form["status_pagamento"],
                 request.form["data_prevista"],
                 request.form["data_recebimento"]
@@ -146,12 +176,11 @@ def financeiro(numero):
 
         lancamentos = conn.execute("""
         SELECT tipo_evento, descricao, valor, status_pagamento
-        FROM financeiro
-        WHERE numero_processo=?
+        FROM financeiro WHERE numero_processo=?
         """, (numero,)).fetchall()
 
     html = """
-    <h1>💰 Financeiro — Processo {{ numero }}</h1>
+    <h1>💰 Financeiro — {{ numero }}</h1>
 
     <form method="POST">
         <label>Tipo:</label>
@@ -159,41 +188,38 @@ def financeiro(numero):
             <option>HONORÁRIOS</option>
             <option>RPV</option>
             <option>PRECATÓRIO</option>
-        </select><br><br>
+        </select><br>
 
-        <label>Descrição:</label><br>
-        <input name="descricao" required><br><br>
+        <label>Descrição:</label>
+        <input name="descricao"><br>
 
-        <label>Valor:</label><br>
-        <input name="valor" type="number" step="0.01" required><br><br>
+        <label>Valor:</label>
+        <input name="valor" type="number" step="0.01"><br>
 
         <label>Status:</label>
         <select name="status_pagamento">
             <option>RECEBIDO</option>
             <option>A_RECEBER</option>
-        </select><br><br>
+        </select><br>
 
         <label>Data prevista:</label>
-        <input name="data_prevista" type="date"><br><br>
+        <input name="data_prevista" type="date"><br>
 
         <label>Data recebimento:</label>
         <input name="data_recebimento" type="date"><br><br>
 
-        <button type="submit">Salvar lançamento</button>
+        <button type="submit">Salvar</button>
     </form>
 
     <hr>
-
     <h3>Lançamentos</h3>
     <ul>
     {% for l in lancamentos %}
-        <li>{{ l[0] }} — {{ l[1] }} — R$ {{ l[2] }} ({{ l[3] }})</li>
-    {% else %}
-        <li><i>Nenhum lançamento ainda</i></li>
+      <li>{{ l[0] }} — {{ l[1] }} — R$ {{ l[2] }} ({{ l[3] }})</li>
     {% endfor %}
     </ul>
 
-    <a href="/">⬅ Voltar ao dashboard</a>
+    <a href="/">Voltar</a>
     """
     return render_template_string(html, numero=numero, lancamentos=lancamentos)
 
