@@ -1,6 +1,7 @@
 from flask import Flask, request, redirect, url_for, render_template_string
 import pandas as pd
 import sqlite3
+import os
 
 app = Flask(__name__)
 DB_PATH = "dados.db"
@@ -33,6 +34,19 @@ def init_db():
         )
         """)
 init_db()
+
+# ---------------- FUNÇÕES AUXILIARES ----------------
+def pegar(row, *nomes):
+    for n in nomes:
+        if n in row and pd.notna(row[n]):
+            return str(row[n]).strip()
+    return ""
+
+def to_float(valor):
+    try:
+        return float(str(valor).replace(".", "").replace(",", "."))
+    except:
+        return 0.0
 
 # ---------------- DASHBOARD ----------------
 @app.route("/")
@@ -94,6 +108,7 @@ def dashboard():
     {% endfor %}
     </ul>
     """
+
     return render_template_string(
         html,
         contratos=contratos,
@@ -111,17 +126,22 @@ def importar_contratos():
 
     with db() as conn:
         for _, row in df.iterrows():
+            numero = pegar(row, "Número", "Numero", "Processo")
+            if not numero:
+                continue
+
             conn.execute("""
             INSERT OR IGNORE INTO contratos
             (numero, cliente, tipo, acao, data_encerramento)
             VALUES (?, ?, ?, ?, ?)
             """, (
-                str(row.get("Número", "")).strip(),
-                row.get("Cliente", ""),
-                row.get("Tipo", ""),
-                row.get("Ação", ""),
-                row.get("Data de Encerramento", "")
+                numero,
+                pegar(row, "Cliente"),
+                pegar(row, "Tipo"),
+                pegar(row, "Ação"),
+                pegar(row, "Data de Encerramento")
             ))
+
     return redirect("/")
 
 # ---------------- IMPORTAR RPV ----------------
@@ -130,109 +150,18 @@ def importar_rpv():
     arquivo = request.files["arquivo"]
     df = pd.read_excel(arquivo)
 
-    def pegar(row, *nomes):
-        for n in nomes:
-            if n in row and pd.notna(row[n]):
-                return row[n]
-        return ""
+    print("COLUNAS RPV:", df.columns.tolist())
+
+    inseridos = 0
 
     with db() as conn:
         for _, row in df.iterrows():
-            numero = str(pegar(row, "Processo", "Número", "Numero")).strip()
-            valor = pegar(row, "Honorário", "Valor a receber", "Valor")
-            status_raw = str(pegar(row, "Status")).upper()
+            numero = pegar(row, "Processo", "Número", "Numero")
+            valor = to_float(pegar(row, "Honorário", "Valor a receber", "Valor"))
+            status_raw = pegar(row, "Status").upper()
 
             conn.execute("""
             INSERT INTO financeiro (
                 numero_processo,
                 tipo_evento,
                 descricao,
-                valor,
-                status_pagamento,
-                data_prevista,
-                data_recebimento
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                numero,
-                "RPV",
-                f"NF: {pegar(row,'Nota Fiscal')} - {pegar(row,'Observações')}",
-                float(valor) if valor else 0,
-                "RECEBIDO" if "PAGO" in status_raw else "A_RECEBER",
-                pegar(row, "Data Prevista"),
-                pegar(row, "Data Pagamento", "Data de Pagamento")
-            ))
-
-    return redirect("/")
-
-# ---------------- FINANCEIRO POR CONTRATO ----------------
-@app.route("/financeiro/<numero>", methods=["GET", "POST"])
-def financeiro(numero):
-    with db() as conn:
-        if request.method == "POST":
-            conn.execute("""
-            INSERT INTO financeiro (
-                numero_processo, tipo_evento, descricao, valor,
-                status_pagamento, data_prevista, data_recebimento
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                numero,
-                request.form["tipo_evento"],
-                request.form["descricao"],
-                request.form["valor"],
-                request.form["status_pagamento"],
-                request.form["data_prevista"],
-                request.form["data_recebimento"]
-            ))
-            return redirect(url_for("financeiro", numero=numero))
-
-        lancamentos = conn.execute("""
-        SELECT tipo_evento, descricao, valor, status_pagamento
-        FROM financeiro WHERE numero_processo=?
-        """, (numero,)).fetchall()
-
-    html = """
-    <h1>💰 Financeiro — {{ numero }}</h1>
-
-    <form method="POST">
-        <label>Tipo:</label>
-        <select name="tipo_evento">
-            <option>HONORÁRIOS</option>
-            <option>RPV</option>
-            <option>PRECATÓRIO</option>
-        </select><br>
-
-        <label>Descrição:</label>
-        <input name="descricao"><br>
-
-        <label>Valor:</label>
-        <input name="valor" type="number" step="0.01"><br>
-
-        <label>Status:</label>
-        <select name="status_pagamento">
-            <option>RECEBIDO</option>
-            <option>A_RECEBER</option>
-        </select><br>
-
-        <label>Data prevista:</label>
-        <input name="data_prevista" type="date"><br>
-
-        <label>Data recebimento:</label>
-        <input name="data_recebimento" type="date"><br><br>
-
-        <button type="submit">Salvar</button>
-    </form>
-
-    <hr>
-    <h3>Lançamentos</h3>
-    <ul>
-    {% for l in lancamentos %}
-      <li>{{ l[0] }} — {{ l[1] }} — R$ {{ l[2] }} ({{ l[3] }})</li>
-    {% endfor %}
-    </ul>
-
-    <a href="/">Voltar</a>
-    """
-    return render_template_string(html, numero=numero, lancamentos=lancamentos)
-
-if __name__ == "__main__":
-    app.run()
