@@ -6,7 +6,7 @@ from datetime import datetime
 app = Flask(__name__)
 DB_PATH = "dados.db"
 
-# ---------------- BANCO ----------------
+# ================== BANCO ==================
 def db():
     return sqlite3.connect(DB_PATH)
 
@@ -20,6 +20,7 @@ def init_db():
             data_encerramento TEXT
         )
         """)
+
         conn.execute("""
         CREATE TABLE IF NOT EXISTS financeiro (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,32 +34,28 @@ def init_db():
         """)
 init_db()
 
-# ---------------- UTIL ----------------
+# ================== UTIL ==================
 def to_float(v):
     try:
         return float(str(v).replace(".", "").replace(",", "."))
     except:
         return 0.0
 
-def ano(data):
-    try:
-        return datetime.strptime(data, "%Y-%m-%d").year
-    except:
-        return None
-
-def mes(data):
-    try:
-        return datetime.strptime(data, "%Y-%m-%d").strftime("%Y-%m")
-    except:
-        return None
-
-# ---------------- DASHBOARD ----------------
+# ================== DASHBOARD ==================
 @app.route("/")
 def dashboard():
     with db() as conn:
-        total_contratos = conn.execute("SELECT COUNT(*) FROM contratos").fetchone()[0]
-        ativos = conn.execute("SELECT COUNT(*) FROM contratos WHERE status='ATIVO'").fetchone()[0]
-        encerrados = conn.execute("SELECT COUNT(*) FROM contratos WHERE status='ENCERRADO'").fetchone()[0]
+        total_contratos = conn.execute(
+            "SELECT COUNT(*) FROM contratos"
+        ).fetchone()[0]
+
+        ativos = conn.execute(
+            "SELECT COUNT(*) FROM contratos WHERE status='ATIVO'"
+        ).fetchone()[0]
+
+        encerrados = conn.execute(
+            "SELECT COUNT(*) FROM contratos WHERE status='ENCERRADO'"
+        ).fetchone()[0]
 
         total_faturado = conn.execute(
             "SELECT COALESCE(SUM(valor),0) FROM financeiro"
@@ -72,6 +69,10 @@ def dashboard():
             "SELECT COALESCE(SUM(valor),0) FROM financeiro WHERE status_pagamento='A_RECEBER'"
         ).fetchone()[0]
 
+        honorarios = conn.execute(
+            "SELECT COALESCE(SUM(valor),0) FROM financeiro WHERE tipo_evento='HONORÁRIOS'"
+        ).fetchone()[0]
+
         rpv = conn.execute(
             "SELECT COALESCE(SUM(valor),0) FROM financeiro WHERE tipo_evento='RPV'"
         ).fetchone()[0]
@@ -80,19 +81,15 @@ def dashboard():
             "SELECT COALESCE(SUM(valor),0) FROM financeiro WHERE tipo_evento='PRECATÓRIO'"
         ).fetchone()[0]
 
-        honorarios = conn.execute(
-            "SELECT COALESCE(SUM(valor),0) FROM financeiro WHERE tipo_evento='HONORÁRIOS'"
-        ).fetchone()[0]
-
         faturado_por_ano = conn.execute("""
-            SELECT substr(data_evento,1,4) as ano, SUM(valor)
+            SELECT substr(data_evento,1,4) AS ano, SUM(valor)
             FROM financeiro
             GROUP BY ano
             ORDER BY ano
         """).fetchall()
 
         recebido_por_mes = conn.execute("""
-            SELECT substr(data_evento,1,7) as mes, SUM(valor)
+            SELECT substr(data_evento,1,7) AS mes, SUM(valor)
             FROM financeiro
             WHERE status_pagamento='RECEBIDO'
             GROUP BY mes
@@ -126,14 +123,14 @@ def dashboard():
     <h3>Faturamento por Ano</h3>
     <ul>
     {% for a in faturado_por_ano %}
-        <li>{{ a[0] }}: R$ {{ a[1] }}</li>
+        <li>{{ a[0] }} — R$ {{ "%.2f"|format(a[1]) }}</li>
     {% endfor %}
     </ul>
 
     <h3>Recebido por Mês</h3>
     <ul>
     {% for m in recebido_por_mes %}
-        <li>{{ m[0] }}: R$ {{ m[1] }}</li>
+        <li>{{ m[0] }} — R$ {{ "%.2f"|format(m[1]) }}</li>
     {% endfor %}
     </ul>
 
@@ -174,7 +171,7 @@ def dashboard():
         contratos=contratos
     )
 
-# ---------------- IMPORTAR CONTRATOS ----------------
+# ================== IMPORTAR CONTRATOS ==================
 @app.route("/importar_contratos", methods=["POST"])
 def importar_contratos():
     arquivo = request.files["arquivo"]
@@ -183,27 +180,27 @@ def importar_contratos():
     with db() as conn:
         for _, row in df.iterrows():
             numero = str(row.get("Número", "")).strip()
+            cliente = str(row.get("Cliente", "")).strip()
+
             if not numero:
                 continue
+
             conn.execute("""
-            INSERT OR IGNORE INTO contratos
-            (numero, cliente)
-            VALUES (?, ?)
-            """, (
-                numero,
-                row.get("Cliente", "")
-            ))
+                INSERT OR IGNORE INTO contratos (numero, cliente)
+                VALUES (?, ?)
+            """, (numero, cliente))
+
     return redirect("/")
 
-# ---------------- FINANCEIRO POR CONTRATO ----------------
+# ================== FINANCEIRO POR CONTRATO ==================
 @app.route("/financeiro/<numero>", methods=["GET", "POST"])
 def financeiro(numero):
     with db() as conn:
         if request.method == "POST":
             conn.execute("""
-            INSERT INTO financeiro
-            (numero_processo, tipo_evento, descricao, valor, status_pagamento, data_evento)
-            VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO financeiro
+                (numero_processo, tipo_evento, descricao, valor, status_pagamento, data_evento)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 numero,
                 request.form["tipo_evento"],
@@ -215,8 +212,10 @@ def financeiro(numero):
             return redirect(url_for("financeiro", numero=numero))
 
         lancamentos = conn.execute("""
-        SELECT tipo_evento, descricao, valor, status_pagamento, data_evento
-        FROM financeiro WHERE numero_processo=?
+            SELECT data_evento, tipo_evento, descricao, valor, status_pagamento
+            FROM financeiro
+            WHERE numero_processo=?
+            ORDER BY data_evento
         """, (numero,)).fetchall()
 
     html = """
@@ -252,15 +251,15 @@ def financeiro(numero):
     <h3>Lançamentos</h3>
     <ul>
     {% for l in lancamentos %}
-      <li>{{ l[4] }} — {{ l[0] }} — {{ l[1] }} — R$ {{ l[2] }} ({{ l[3] }})</li>
+      <li>{{ l[0] }} — {{ l[1] }} — {{ l[2] }} — R$ {{ "%.2f"|format(l[3]) }} ({{ l[4] }})</li>
     {% endfor %}
     </ul>
 
-    <a href="/">Voltar</a>
+    <a href="/">⬅ Voltar</a>
     """
 
     return render_template_string(html, numero=numero, lancamentos=lancamentos)
 
-# ---------------- START ----------------
+# ================== START ==================
 if __name__ == "__main__":
     app.run()
