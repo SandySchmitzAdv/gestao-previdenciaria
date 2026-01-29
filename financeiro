@@ -1,0 +1,130 @@
+# main.py
+from fastapi import FastAPI
+from database import Base, engine
+from routes.consultas import router as consultas_router
+
+app = FastAPI(title="Consultas Financeiras")
+
+Base.metadata.create_all(bind=engine)
+
+app.include_router(consultas_router)
+
+
+# database.py
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+
+DATABASE_URL = "sqlite:///./dados.db"
+
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# models.py
+from sqlalchemy import Column, Integer, String, Float
+from database import Base
+
+class Entradas(Base):
+    __tablename__ = "entradas"
+    id = Column(Integer, primary_key=True, index=True)
+    descricao = Column(String)
+    categoria = Column(String)
+    valor = Column(Float)
+
+class Saidas(Base):
+    __tablename__ = "saidas"
+    id = Column(Integer, primary_key=True, index=True)
+    data = Column(String)
+    descricao = Column(String)
+    categoria = Column(String)
+    valor = Column(Float)
+    observacao = Column(String)
+
+class ResumoMensal(Base):
+    __tablename__ = "resumo_mensal"
+    id = Column(Integer, primary_key=True, index=True)
+    mes = Column(String)
+    total_entradas = Column(Float)
+    total_saidas = Column(Float)
+    saldo = Column(Float)
+    observacao = Column(String)
+
+class Leitura(Base):
+    __tablename__ = "leitura"
+    id = Column(Integer, primary_key=True, index=True)
+    tipo = Column(String)
+    descricao = Column(String)
+    referencia = Column(String)
+    valor = Column(Float)
+    status = Column(String)
+    observacao = Column(String)
+
+
+# services/excel_import.py
+import pandas as pd
+from models import Entradas, Saidas, ResumoMensal, Leitura
+
+def importar_excel(caminho, db):
+    xls = pd.ExcelFile(caminho)
+
+    planilhas = {
+        "Entradas": (Entradas, ["descricao", "categoria", "valor"]),
+        "Saídas": (Saidas, ["data", "descricao", "categoria", "valor", "observacao"]),
+        "Resumo Mensal": (ResumoMensal, ["mes", "total_entradas", "total_saidas", "saldo", "observacao"]),
+        "Leitura": (Leitura, ["tipo", "descricao", "referencia", "valor", "status", "observacao"])
+    }
+
+    for nome, (model, campos) in planilhas.items():
+        df = pd.read_excel(xls, nome)
+        df.columns = campos
+        db.query(model).delete()
+        for _, row in df.iterrows():
+            db.add(model(**row.to_dict()))
+        db.commit()
+
+
+# routes/consultas.py
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from database import get_db
+from models import Entradas, Saidas, ResumoMensal, Leitura
+from services.excel_import import importar_excel
+
+router = APIRouter()
+
+@router.get("/consultas/entradas")
+def entradas(db: Session = Depends(get_db)):
+    return db.query(Entradas).all()
+
+@router.get("/consultas/saidas")
+def saidas(db: Session = Depends(get_db)):
+    return db.query(Saidas).all()
+
+@router.get("/consultas/resumo")
+def resumo(db: Session = Depends(get_db)):
+    return db.query(ResumoMensal).all()
+
+@router.get("/consultas/leitura")
+def leitura(db: Session = Depends(get_db)):
+    return db.query(Leitura).all()
+
+@router.post("/importar")
+def importar(db: Session = Depends(get_db)):
+    importar_excel("dados.xlsx", db)
+    return {"status": "Excel importado com sucesso"}
+
+
+# requirements.txt
+fastapi
+uvicorn
+sqlalchemy
+pandas
+openpyxl
